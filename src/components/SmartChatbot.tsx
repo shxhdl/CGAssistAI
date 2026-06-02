@@ -36,6 +36,11 @@ const QUICK_PROMPTS = [
   "Explain a concept",
 ];
 
+const TEACHER_PROMPTS = [
+  "Who submitted?",
+  "Who didn't submit?",
+];
+
 // ─── Bubble ──────────────────────────────────────────────────────────────────
 
 function MessageBubble({ msg }: { msg: ChatMessage }) {
@@ -99,16 +104,42 @@ function TypingIndicator() {
 // ─── Main Component ─────────────────────────────────────────────────────────── 
 
 export function SmartChatbot() {
-  const { user, session } = useAuth();
+  const { user, session, role } = useAuth();
 
-  const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
+  const [open, setOpen] = useState<boolean>(() => {
+    return localStorage.getItem("gca_chat_open") === "true";
+  });
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem("gca_chat_messages");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return parsed.map((m: any) => ({
+          ...m,
+          timestamp: new Date(m.timestamp),
+        }));
+      }
+    } catch (e) {
+      console.error("Failed to load chat history:", e);
+    }
+    return [WELCOME_MESSAGE];
+  });
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [unread, setUnread] = useState(0);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Sync open state to localStorage
+  useEffect(() => {
+    localStorage.setItem("gca_chat_open", String(open));
+  }, [open]);
+
+  // Sync messages to localStorage
+  useEffect(() => {
+    localStorage.setItem("gca_chat_messages", JSON.stringify(messages));
+  }, [messages]);
 
   // Auto-scroll
   useEffect(() => {
@@ -124,60 +155,130 @@ export function SmartChatbot() {
       setUnread(0);
     }
   }, [open]);
-const getDashboardContext = async () => {
-  if (!user) return "No user is logged in.";
+  const getDashboardContext = async () => {
+    if (!user) return "No user is logged in.";
 
-  const { data: profile } = await supabase
-    .from("profiles" as any)
-    .select("*")
-    .eq("user_id", user.id)
-    .maybeSingle();
+    try {
+      // 1. Get user profile
+      const { data: profile } = await supabase
+        .from("profiles" as any)
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
 
-const profileData = profile as any;
+      const profileData = profile as any;
 
-const specialization = profileData?.specialization;
-const level = profileData?.level;
-const semester = profileData?.semester;
+      // 2. Get user role
+      const { data: roleData } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", user.id)
+        .maybeSingle();
 
-  const { data: courses } = await supabase
-    .from("courses" as any)
-    .select("*")
-    .eq("specialization", String(specialization || "").trim())
-    .eq("level", String(level || "").trim())
-    .eq("semester", String(semester || "").trim());
+      const role = roleData?.role || "student";
 
-  const courseIds = (courses || []).map((course: any) => course.id);
+      // 3. Fallback hierarchy for student details
+      const specialization = profileData?.specialization || user.user_metadata?.specialization;
+      const level = profileData?.level || user.user_metadata?.level;
+      const semester = profileData?.semester || user.user_metadata?.semester || user.user_metadata?.block;
 
-  let assignments: any[] = [];
+      let courses: any[] = [];
 
-  if (courseIds.length > 0) {
-    const { data } = await supabase
-      .from("assignments" as any)
-      .select("*")
-      .in("course_id", courseIds)
-      .order("due_date", { ascending: true });
+      // 4. Fetch courses based on role
+      if (role === "teacher") {
+        const teacherEmail = String(profileData?.email || user.email || "").trim().toLowerCase();
+        const { data } = await supabase
+          .from("courses" as any)
+          .select("*")
+          .eq("teacher_email", teacherEmail);
+        courses = data || [];
+      } else {
+        const { data } = await supabase
+          .from("courses" as any)
+          .select("*")
+          .eq("specialization", String(specialization || "").trim())
+          .eq("level", String(level || "").trim())
+          .eq("semester", String(semester || "").trim());
+        courses = data || [];
+      }
 
-    assignments = data || [];
-  }
+      const courseIds = (courses || []).map((course: any) => course.id);
+      let assignments: any[] = [];
 
-  const { data: submissions } = await supabase
-    .from("submissions")
-    .select("*")
-    .eq("student_id", user.id);
+      // 5. Fetch assignments
+      if (courseIds.length > 0) {
+        const { data } = await supabase
+          .from("assignments" as any)
+          .select("*")
+          .in("course_id", courseIds)
+          .order("due_date", { ascending: true });
 
-  const submittedIds = new Set(
-    (submissions || []).map((s: any) => s.assignment_id)
-  );
+        assignments = data || [];
+      }
 
-  return `
-Student Profile:
+      // 6. Fetch submissions and build context
+      if (role === "teacher") {
+        let submissions: any[] = [];
+        if (assignments.length > 0) {
+          const assignmentIds = assignments.map((a: any) => a.id);
+          const { data } = await supabase
+            .from("submissions")
+            .select("*")
+            .in("assignment_id", assignmentIds);
+          submissions = data || [];
+        }
+
+        return `
+Role: Teacher
+Profile Details:
+Name: ${profileData?.full_name || "Teacher"}
+Email: ${profileData?.email || user.email}
+
+Courses Taught:
+${
+  (courses || []).map((c: any) => `- ${c.code}: ${c.name} (Level ${c.level}, Semester ${c.semester})`).join("\n") ||
+  "No courses assigned"
+}
+
+Assignments Created:
+${
+  assignments
+    .map((a: any) => {
+      const subs = submissions.filter((s: any) => s.assignment_id === a.id);
+      const graded = subs.filter((s: any) => s.grade !== null).length;
+      const pendingGrading = subs.filter((s: any) => s.grade === null).length;
+      return `- ${a.title} | Course: ${a.subject} | Due: ${a.due_date} | Submissions: ${subs.length} total (${pendingGrading} pending grading, ${graded} graded)`;
+    })
+    .join("\n") || "No assignments created"
+}
+
+Dashboard Overview:
+Total courses taught: ${(courses || []).length}
+Total assignments created: ${assignments.length}
+Total submissions received: ${submissions.length}
+Submissions pending grading: ${submissions.filter((s: any) => s.grade === null).length}
+`;
+      } else {
+        // Student role
+        const { data: submissions } = await supabase
+          .from("submissions")
+          .select("*")
+          .eq("student_id", user.id);
+
+        const submittedIds = new Set(
+          (submissions || []).map((s: any) => s.assignment_id)
+        );
+
+        return `
+Role: Student
+Profile Details:
 Name: ${profileData?.full_name || "Student"}
 Email: ${profileData?.email || user.email}
 Programme: ${specialization || "Not specified"}
 Level: ${level || "Not specified"}
 Block: ${semester || "Not specified"}
 
-Courses:
+Courses Enrolled:
 ${
   (courses || []).map((c: any) => `- ${c.code}: ${c.name}`).join("\n") ||
   "No courses found"
@@ -195,13 +296,18 @@ ${
     .join("\n") || "No assignments found"
 }
 
-Dashboard:
+Dashboard Overview:
 Total courses: ${(courses || []).length}
 Total assignments: ${assignments.length}
-Pending: ${assignments.filter((a: any) => !submittedIds.has(a.id)).length}
-Completed: ${assignments.filter((a: any) => submittedIds.has(a.id)).length}
+Pending assignments: ${assignments.filter((a: any) => !submittedIds.has(a.id)).length}
+Completed assignments: ${assignments.filter((a: any) => submittedIds.has(a.id)).length}
 `;
-};
+      }
+    } catch (e: any) {
+      console.error("Error generating chatbot context:", e);
+      return "Error loading dashboard context.";
+    }
+  };
   // ── Send message ─────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(
@@ -221,46 +327,50 @@ Completed: ${assignments.filter((a: any) => submittedIds.has(a.id)).length}
 
       try {
         const dashboardContext = await getDashboardContext();
-        console.log(dashboardContext);
+        const currentDateStr = new Date().toLocaleString("en-US", { 
+          weekday: 'long', 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+
         const res = await fetch(DEEPSEEK_API, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${import.meta.env.VITE_DEEPSEEK_API_KEY}`,
-  },
-  body: JSON.stringify({
-    model: "deepseek-chat",
-    messages: [
-      {
-  role: "system",
-  content: `
-You are GCAssist AI.
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${import.meta.env.VITE_DEEPSEEK_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "deepseek-chat",
+            messages: [
+              {
+                role: "system",
+                content: `
+You are GCAssist AI, a simple and direct study assistant for Gulf College.
 
-You are integrated directly with the student's dashboard.
+Current Date: ${currentDateStr}
 
-You already have access to:
-- Dashboard
-- Assignments
-- Courses
-- Calendar
-- Profile
-- Settings
+=========================================
+DASHBOARD DATA:
+${dashboardContext}
+=========================================
 
-Use ONLY the dashboard data provided below.
+CRITICAL INSTRUCTIONS:
+1. **BE EXTREMELY BRIEF & SIMPLE**: Answer in as few words as possible. Keep responses under 2-3 short sentences. No filler words, no conversational fluff, no repeating dates/times unnecessarily.
+2. **FORMAT DIRECTLY**: Use simple bullet points or short bold statements.
+3. **DO NOT EXPLAIN COMMONSENSE**: If an assignment is due in the past, just list it as "Overdue" directly. Do not write paragraphs explaining *why* it is overdue.
+4. **NO UNSOLICITED ADVICE**: Do not offer study plans, generic advice, or warnings about "penalties" unless the user explicitly asks for them.
 
-${getDashboardContext}
-
-Rules:
-- Never say you cannot access the dashboard.
-- Never say you cannot access assignments.
-- Never mention Moodle, LMS, Blackboard, Canvas, student portal, or external systems.
-- Always answer using the provided dashboard data.
-- Keep answers short.
-- If the student asks for assignments, list them directly.
-- If the student asks about courses, use the courses data.
-- If the student asks about deadlines, use the assignments due dates.
+RULES:
+- A student is in a course if listed in "Courses".
+- **Overdue** = Status is "Pending" AND due date is in the past relative to ${currentDateStr}.
+- **Next Deadline** = The "Pending" assignment with the closest future due date.
+- For academic concepts (e.g. OOP, databases), explain them in a very simple, 1-2 sentence definition.
+- Never say you cannot access data. Never mention external portals like Moodle or Blackboard.
 `
-},
+              },
       {
         role: "user",
         content: text.trim(),
@@ -413,7 +523,7 @@ const botMsg: ChatMessage = {
             {/* Quick Prompts — only show when only welcome message */}
             {messages.length === 1 && !isLoading && (
               <div className="px-4 pb-2 flex flex-wrap gap-1.5 shrink-0">
-                {QUICK_PROMPTS.map((prompt) => (
+                {(role === "teacher" ? TEACHER_PROMPTS : QUICK_PROMPTS).map((prompt) => (
                   <button
                     key={prompt}
                     onClick={() => sendMessage(prompt)}

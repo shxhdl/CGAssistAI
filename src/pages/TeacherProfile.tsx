@@ -2,7 +2,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { User, Mail, BadgeIcon } from "lucide-react";
+import { User, Mail } from "lucide-react";
 import { motion } from "framer-motion";
 
 export default function TeacherProfile() {
@@ -27,19 +27,6 @@ export default function TeacherProfile() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <Label className="text-muted-foreground">
-                    Teacher ID
-                  </Label>
-
-                  <div className="mt-2 flex items-center gap-3 border rounded-lg p-3">
-                    <BadgeIcon className="w-5 h-5 text-primary" />
-                    <span>
-                      {profile?.student_id || "Not Available"}
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <Label className="text-muted-foreground">
                     Teacher Name
                   </Label>
 
@@ -50,18 +37,18 @@ export default function TeacherProfile() {
                     </span>
                   </div>
                 </div>
-              </div>
 
-              <div>
-                <Label className="text-muted-foreground">
-                  Email Address
-                </Label>
+                <div>
+                  <Label className="text-muted-foreground">
+                    Email Address
+                  </Label>
 
-                <div className="mt-2 flex items-center gap-3 border rounded-lg p-3">
-                  <Mail className="w-5 h-5 text-primary" />
-                  <span>
-                    {user?.email || "Not Available"}
-                  </span>
+                  <div className="mt-2 flex items-center gap-3 border rounded-lg p-3">
+                    <Mail className="w-5 h-5 text-primary" />
+                    <span>
+                      {user?.email || "Not Available"}
+                    </span>
+                  </div>
                 </div>
               </div>
             </CardContent>

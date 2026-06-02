@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "./useAuth";
 import { toast } from "sonner";
+import { sendNotification } from "@/lib/notifications";
 
 export interface AssignmentWithSubmission {
   id: string;
@@ -153,6 +154,34 @@ export function useAssignments() {
     if (error) {
       toast.error(error.message);
       return { error };
+    }
+
+    // Send notification to the teacher who created the assignment
+    try {
+      const { data: assignmentData } = await supabase
+        .from("assignments" as any)
+        .select("title, created_by")
+        .eq("id", assignmentId)
+        .maybeSingle();
+
+      const { data: profileData } = await supabase
+        .from("profiles" as any)
+        .select("full_name")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      const studentName = profileData?.full_name || user.user_metadata?.full_name || user.email?.split("@")[0] || "A student";
+
+      if (assignmentData?.created_by) {
+        await sendNotification(
+          assignmentData.created_by,
+          `${studentName} submitted "${assignmentData.title}"`,
+          "submission",
+          assignmentId
+        );
+      }
+    } catch (notifError) {
+      console.error("Failed to send submission notification to teacher:", notifError);
     }
 
     toast.success("Assignment submitted successfully!");

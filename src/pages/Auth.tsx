@@ -102,8 +102,19 @@ if (mode === "signup" && !passwordRegex.test(password)) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md shadow-elevated border-border">
+    <div 
+      className="min-h-screen flex items-center justify-center p-4 relative"
+      style={{
+        backgroundImage: 'url("/gulf-college-bg.jpg")',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat'
+      }}
+    >
+      {/* Dark overlay to make the card readable */}
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" />
+      
+      <Card className="w-full max-w-md shadow-2xl border-border relative z-10 bg-card/95 backdrop-blur-md">
         <CardHeader className="text-center space-y-2">
           <div className="flex justify-center mb-2">
             <img
