@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { OpenRouter } from "@openrouter/sdk";
-
+import { Resend } from "resend";
 dotenv.config();
 
 const app = express();
@@ -34,6 +34,9 @@ const supabase = createClient(
 const openrouter = new OpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY,
 });
+
+// ── Resend Email Client ───────────────────────────────────────────────────────
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ── Intent detection ──────────────────────────────────────────────────────────
 type Intent = "assignments" | "deadlines" | "grades" | "teachers" | "general";
@@ -282,7 +285,110 @@ app.post("/api/chat", async (req, res) => {
     });
   }
 });
+// ── Cron job for Email Reminders ──────────────────────────────────────────────
+app.get("/api/cron/reminders", async (req, res) => {
+  console.log("⏰ /api/cron/reminders hit");
 
+  // Optional: Secure the cron endpoint with a secret
+  const authHeader = req.headers.authorization;
+  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Fetch all assignments that are pending
+    const { data: assignments, error } = await supabase
+      .from("assignments")
+      .select("*");
+
+    if (error || !assignments) {
+      throw error || new Error("No assignments found");
+    }
+
+    const emailsToSend: { to: string; subject: string; html: string }[] = [];
+
+    // Map to store student profiles
+    const studentProfiles = new Map<string, any>();
+
+    for (const assignment of assignments) {
+      const dueDate = new Date(assignment.due_date);
+      dueDate.setHours(0, 0, 0, 0);
+      
+      const diffTime = Math.abs(dueDate.getTime() - today.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      const isDueToday = dueDate.getTime() === today.getTime();
+      
+      if (isDueToday || diffDays === 1 || diffDays === 3) {
+        let daysText = isDueToday ? "TODAY" : `in ${diffDays} day(s)`;
+
+        // Find students assigned to this
+        let studentIds: string[] = [];
+        if (assignment.assign_to_all) {
+            const { data: allStudents } = await supabase.from("user_roles").select("user_id").eq("role", "student");
+            studentIds = (allStudents || []).map((s: any) => s.user_id);
+        } else {
+            const { data: assignedStudents } = await supabase.from("assignment_students").select("student_id").eq("assignment_id", assignment.id);
+            studentIds = (assignedStudents || []).map((s: any) => s.student_id);
+        }
+
+        // Filter out those who already submitted
+        const { data: submissions } = await supabase.from("submissions").select("student_id").eq("assignment_id", assignment.id);
+        const submittedIds = new Set((submissions || []).map((s: any) => s.student_id));
+        const pendingStudents = studentIds.filter(id => !submittedIds.has(id));
+
+        for (const studentId of pendingStudents) {
+          if (!studentProfiles.has(studentId)) {
+            const { data: profile } = await supabase.from("profiles").select("*").eq("user_id", studentId).maybeSingle();
+            if (profile) studentProfiles.set(studentId, profile);
+          }
+
+          const student = studentProfiles.get(studentId);
+          if (student && student.email) {
+            emailsToSend.push({
+              to: student.email,
+              subject: `Reminder: "${assignment.title}" is due ${daysText}!`,
+              html: `<p>Hello ${student.full_name || "Student"},</p>
+                     <p>This is an automated reminder that your assignment <strong>${assignment.title}</strong> for <strong>${assignment.subject}</strong> is due <strong>${daysText}</strong>.</p>
+                     <p>Please make sure to submit your work on time!</p>
+                     <br/>
+                     <p>Best,<br/>StudyPilot AI</p>`
+            });
+          }
+        }
+      }
+    }
+
+    // Send emails via Resend
+    let sentCount = 0;
+    if (process.env.RESEND_API_KEY && emailsToSend.length > 0) {
+      for (const email of emailsToSend) {
+         try {
+           await resend.emails.send({
+             from: "StudyPilot <onboarding@resend.dev>",
+             to: [email.to],
+             subject: email.subject,
+             html: email.html,
+           });
+           sentCount++;
+         } catch (e) {
+           console.error("Failed to send email to", email.to, e);
+         }
+      }
+    } else {
+      console.log(`Prepared ${emailsToSend.length} emails, but RESEND_API_KEY is missing or 0 emails to send.`);
+    }
+
+    res.json({ success: true, emailsPrepared: emailsToSend.length, emailsSent: sentCount });
+
+  } catch (err: any) {
+    console.error("🔥 /api/cron/reminders error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── Health check — open http://localhost:3001/health to verify env vars ───────
 app.get("/health", (_req, res) => {
   res.json({

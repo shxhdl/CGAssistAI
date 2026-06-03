@@ -42,41 +42,31 @@ export function useAssignments() {
     setLoading(true);
 
     try {
-      const specialization = user.user_metadata?.specialization;
-      const level = user.user_metadata?.level;
-      const semester =
-        user.user_metadata?.semester || user.user_metadata?.block;
-
-      if (!specialization || !level || !semester) {
-        setAssignments([]);
-        setLoading(false);
-        return;
-      }
-
-      const { data: studentCourses, error: coursesError } = await supabase
-        .from("courses" as any)
-        .select("id")
-        .eq("specialization", String(specialization).trim())
-        .eq("level", String(level).trim())
-        .eq("semester", String(semester).trim());
-
-      if (coursesError) throw coursesError;
-
-      const courseIds = (studentCourses || []).map((course: any) => course.id);
-
-      if (courseIds.length === 0) {
-        setAssignments([]);
-        setLoading(false);
-        return;
-      }
-
-      const { data: assignmentsData, error: assignmentsError } = await supabase
-        .from("assignments" as any)
+      // 1. Fetch assignments where assign_to_all = true
+      const { data: allData, error: allError } = await supabase
+        .from("assignments")
         .select("*")
-        .in("course_id", courseIds)
-        .order("due_date", { ascending: true });
+        .eq("assign_to_all", true);
 
-      if (assignmentsError) throw assignmentsError;
+      if (allError) throw allError;
+
+      // 2. Fetch assignments specifically assigned via junction table
+      const { data: studentData, error: studentError } = await supabase
+        .from("assignment_students")
+        .select("assignment_id, assignments(*)")
+        .eq("student_id", user.id);
+
+      if (studentError) throw studentError;
+
+      // Merge & deduplicate
+      const assignmentsMap = new Map<string, any>();
+      (allData || []).forEach((a: any) => assignmentsMap.set(a.id, a));
+      (studentData || []).forEach((row: any) => {
+        const a = row.assignments;
+        if (a && !assignmentsMap.has(a.id)) assignmentsMap.set(a.id, a);
+      });
+      
+      const assignmentsData = Array.from(assignmentsMap.values());
 
       const sortedAssignments = [...(assignmentsData || [])].sort(
         (a: any, b: any) =>
